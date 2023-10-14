@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/go-json-experiment/json"
+	"github.com/go-json-experiment/json/jsontext"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -86,15 +87,16 @@ func client(ctx context.Context, address string) error {
 	}
 	defer resp.Body.Close()
 
-	w := &countWriter{
+	countWriter := &countWriter{
 		w: pw,
 	}
+
 	bufferedReader := bufio.NewReader(resp.Body)
-	bufferedWriter := bufio.NewWriter(w)
+	bufferedWriter := bufio.NewWriter(countWriter)
 	defer bufferedWriter.Flush()
 
-	enc := json.NewEncoder(bufferedWriter)
-	dec := json.NewDecoder(bufferedReader)
+	enc := jsontext.NewEncoder(bufferedWriter)
+	dec := jsontext.NewDecoder(bufferedReader)
 
 	ticker := time.NewTicker(1 * time.Second)
 	tChan := ticker.C
@@ -109,7 +111,7 @@ func client(ctx context.Context, address string) error {
 			slog.Info("client: context was done, exiting")
 			return nil
 		case <-tChan:
-			err := enc.Encode(requestMsg{
+			err := json.MarshalEncode(enc, requestMsg{
 				Msg: "ping",
 			})
 			if err != nil {
@@ -127,10 +129,10 @@ func client(ctx context.Context, address string) error {
 			}
 			slog.Debug("client: posted ping to server")
 			clientPings.Add(1)
-			clientWriteBytes.Store(w.count)
+			clientWriteBytes.Store(countWriter.count)
 			continue
 			var in responseMsg
-			err = dec.Decode(&in)
+			err = json.UnmarshalDecode(dec, &in)
 			if err != nil {
 				if !errors.Is(err, io.EOF) {
 					return fmt.Errorf("failed to decode response message from server, error was: %w", err)
@@ -139,7 +141,7 @@ func client(ctx context.Context, address string) error {
 			}
 			slog.Debug("client: received message from server", "msg", in.Msg)
 			clientPings.Add(1)
-			clientWriteBytes.Store(w.count)
+			clientWriteBytes.Store(countWriter.count)
 		}
 	}
 }
@@ -189,8 +191,10 @@ func server(ctx context.Context, hostPort string) error {
 
 		bufferedReader := bufio.NewReader(request.Body)
 		bufferedWriter := bufio.NewWriter(writer)
-		dec := json.NewDecoder(bufferedReader)
-		enc := json.NewEncoder(bufferedWriter)
+		defer bufferedWriter.Flush()
+
+		dec := jsontext.NewDecoder(bufferedReader)
+		enc := jsontext.NewEncoder(bufferedWriter)
 
 		for {
 			select {
@@ -199,7 +203,7 @@ func server(ctx context.Context, hostPort string) error {
 			case <-ctx.Done():
 				return
 			default:
-				err := dec.Decode(&inMsg)
+				err := json.UnmarshalDecode(dec, &inMsg)
 				if err != nil {
 					if !errors.Is(err, io.ErrUnexpectedEOF) {
 						slog.Error("server: failed to receive request message from client", "error", err)
@@ -210,7 +214,7 @@ func server(ctx context.Context, hostPort string) error {
 				}
 				slog.Debug("server: received message from client", "msg", inMsg.Msg)
 				continue
-				err = enc.Encode(outMsg)
+				err = json.MarshalEncode(enc, outMsg)
 				if err != nil {
 					if !errors.Is(err, io.ErrUnexpectedEOF) {
 						slog.Error("server: failed to send respond message to client", "error", err)
