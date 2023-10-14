@@ -120,6 +120,9 @@ func client(ctx context.Context, address string) error {
 				return nil
 			}
 			slog.Debug("client: posted ping to server")
+			clientPings.Add(1)
+			clientWriteBytes.Store(w.count)
+			continue
 			var in responseMsg
 			err = dec.Decode(&in)
 			if err != nil {
@@ -197,6 +200,7 @@ func server(ctx context.Context, hostPort string) error {
 					return
 				}
 				slog.Debug("server: received message from client", "msg", inMsg.Msg)
+				continue
 				err = enc.Encode(outMsg)
 				if err != nil {
 					if !errors.Is(err, io.ErrUnexpectedEOF) {
