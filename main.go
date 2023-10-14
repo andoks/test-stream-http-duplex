@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -88,8 +89,13 @@ func client(ctx context.Context, address string) error {
 	w := &countWriter{
 		w: pw,
 	}
-	enc := json.NewEncoder(w)
-	dec := json.NewDecoder(resp.Body)
+	bufferedReader := bufio.NewReader(resp.Body)
+	bufferedWriter := bufio.NewWriter(w)
+	defer bufferedWriter.Flush()
+
+	enc := json.NewEncoder(bufferedWriter)
+	dec := json.NewDecoder(bufferedReader)
+
 	ticker := time.NewTicker(1 * time.Second)
 	tChan := ticker.C
 	if true {
@@ -112,7 +118,7 @@ func client(ctx context.Context, address string) error {
 				}
 				return nil
 			}
-			_, err = io.WriteString(w, "\n")
+			_, err = io.WriteString(bufferedWriter, "\n")
 			if err != nil {
 				if !errors.Is(err, io.EOF) {
 					return fmt.Errorf("client: failed to send newline to server, error was: %w", err)
@@ -171,8 +177,6 @@ func server(ctx context.Context, hostPort string) error {
 
 		var inMsg requestMsg
 		outMsg := responseMsg{Msg: "pong"}
-		dec := json.NewDecoder(request.Body)
-		enc := json.NewEncoder(writer)
 
 		// to get the communication going
 		writer.WriteHeader(http.StatusOK)
@@ -182,6 +186,11 @@ func server(ctx context.Context, hostPort string) error {
 			return
 		}
 		slog.Info("server: wrote status ok to client")
+
+		bufferedReader := bufio.NewReader(request.Body)
+		bufferedWriter := bufio.NewWriter(writer)
+		dec := json.NewDecoder(bufferedReader)
+		enc := json.NewEncoder(bufferedWriter)
 
 		for {
 			select {
@@ -210,7 +219,7 @@ func server(ctx context.Context, hostPort string) error {
 					slog.Info("server: client closed connection - finished")
 					return
 				}
-				_, err = io.WriteString(writer, "\n")
+				_, err = io.WriteString(bufferedWriter, "\n")
 				if err != nil {
 					if !errors.Is(err, io.EOF) {
 						slog.Error("server: failed to send newline to client", "error", err)
