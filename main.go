@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -24,6 +25,8 @@ type responseMsg struct {
 }
 
 const ContentTypeNdJson = "application/x-ndjson"
+
+var clientPings atomic.Uint64
 
 func client(ctx context.Context, address string) error {
 	client := http.Client{
@@ -73,12 +76,18 @@ func client(ctx context.Context, address string) error {
 	enc := json.NewEncoder(w)
 	dec := json.NewDecoder(resp.Body)
 	ticker := time.NewTicker(1 * time.Second)
+	tChan := ticker.C
+	if true {
+		dummyChan := make(chan time.Time)
+		close(dummyChan)
+		tChan = dummyChan
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			slog.Info("client: context was done, exiting")
 			return nil
-		case <-ticker.C:
+		case <-tChan:
 			err := enc.Encode(requestMsg{
 				Msg: "ping",
 			})
@@ -105,9 +114,12 @@ func client(ctx context.Context, address string) error {
 				return nil
 			}
 			slog.Debug("client: received message from server", "msg", in.Msg)
+			clientPings.Add(1)
 		}
 	}
 }
+
+var serverPongs atomic.Uint64
 
 func server(ctx context.Context, hostPort string) error {
 	mux := http.NewServeMux()
@@ -192,6 +204,7 @@ func server(ctx context.Context, hostPort string) error {
 					return
 				}
 				slog.Debug("server: sent pong to client")
+				serverPongs.Add(1)
 			}
 		}
 	})
@@ -253,6 +266,18 @@ func main() {
 	eg.Go(func() error {
 		<-ctx.Done()
 		slog.Info("signal: interrupt signal received")
+		return nil
+	})
+	eg.Go(func() error {
+		ticker := time.NewTicker(5 * time.Second)
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				slog.Info("measurements", "serverPongs", serverPongs.Load(), "clientPings", clientPings.Load())
+			}
+		}
 		return nil
 	})
 
