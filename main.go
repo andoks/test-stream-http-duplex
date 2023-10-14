@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -94,7 +95,7 @@ func client(ctx context.Context, address string) error {
 				}
 				return nil
 			}
-			slog.Info("client: posted ping to server")
+			slog.Debug("client: posted ping to server")
 			var in responseMsg
 			err = dec.Decode(&in)
 			if err != nil {
@@ -103,12 +104,12 @@ func client(ctx context.Context, address string) error {
 				}
 				return nil
 			}
-			slog.Info("client: received message from server", "msg", in.Msg)
+			slog.Debug("client: received message from server", "msg", in.Msg)
 		}
 	}
 }
 
-func server(ctx context.Context, address string) error {
+func server(ctx context.Context, hostPort string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		if method := request.Method; method != http.MethodPost {
@@ -167,7 +168,7 @@ func server(ctx context.Context, address string) error {
 					slog.Info("server: client closed connection - finished")
 					return
 				}
-				slog.Info("server: received message from client", "msg", inMsg.Msg)
+				slog.Debug("server: received message from client", "msg", inMsg.Msg)
 				err = enc.Encode(outMsg)
 				if err != nil {
 					if !errors.Is(err, io.ErrUnexpectedEOF) {
@@ -190,13 +191,13 @@ func server(ctx context.Context, address string) error {
 					slog.Error("server: failed to flush request message to client", "error", err)
 					return
 				}
-				slog.Info("server: sent pong to client")
+				slog.Debug("server: sent pong to client")
 			}
 		}
 	})
 
 	server := http.Server{
-		Addr:                         address,
+		Addr:                         hostPort,
 		Handler:                      mux,
 		DisableGeneralOptionsHandler: false,
 		TLSConfig:                    nil,
@@ -233,12 +234,22 @@ func server(ctx context.Context, address string) error {
 }
 
 func main() {
+	var level slog.Level = slog.LevelInfo
+	hostPort := "localhost:8080"
+	flag.TextVar(&level, "log-level", level, "set log level")
+	flag.StringVar(&hostPort, "hostport", hostPort, "set hostPort")
+	flag.Parse()
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		AddSource:   false,
+		Level:       level,
+		ReplaceAttr: nil,
+	})))
+
 	ctx, cancelFunc := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancelFunc()
-	address := "localhost:8080"
 	eg, ctx := errgroup.WithContext(ctx)
-	eg.Go(func() error { return server(ctx, address) })
-	eg.Go(func() error { return client(ctx, "http://"+address) })
+	eg.Go(func() error { return server(ctx, hostPort) })
+	eg.Go(func() error { return client(ctx, "http://"+hostPort) })
 	eg.Go(func() error {
 		<-ctx.Done()
 		slog.Info("signal: interrupt signal received")
