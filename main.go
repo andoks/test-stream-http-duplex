@@ -22,6 +22,8 @@ type responseMsg struct {
 	Msg string
 }
 
+const ContentTypeNdJson = "application/x-ndjson"
+
 func client(ctx context.Context, address string) error {
 	client := http.Client{
 		Transport:     nil,
@@ -40,6 +42,9 @@ func client(ctx context.Context, address string) error {
 		if err != nil {
 			return fmt.Errorf("failed to create request, error was: %w", err)
 		}
+
+		req.Header.Set("Accept", ContentTypeNdJson)
+		req.Header.Set("Content-Type", ContentTypeNdJson)
 
 		select {
 		case <-ctx.Done():
@@ -82,6 +87,13 @@ func client(ctx context.Context, address string) error {
 				}
 				return nil
 			}
+			_, err = io.WriteString(w, "\n")
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					return fmt.Errorf("client: failed to send newline to server, error was: %w", err)
+				}
+				return nil
+			}
 			slog.Info("client: posted ping to server")
 			var in responseMsg
 			err = dec.Decode(&in)
@@ -99,6 +111,25 @@ func client(ctx context.Context, address string) error {
 func server(ctx context.Context, address string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		if method := request.Method; method != http.MethodPost {
+			writer.Header().Set("Allow", http.MethodPost)
+			writer.WriteHeader(http.StatusMethodNotAllowed)
+			slog.Info("server: client attempted to connect with wrong method instead of POST", "wrong_method", method)
+			return
+		}
+
+		if contentType := request.Header.Get("Content-Type"); contentType != ContentTypeNdJson {
+			writer.WriteHeader(http.StatusUnsupportedMediaType)
+			slog.Info("server: client attempted to connect with wrong content-type instead of "+ContentTypeNdJson, "wrong_content_type", contentType)
+			return
+		}
+
+		if accepts := request.Header.Get("Accept"); accepts != ContentTypeNdJson {
+			writer.WriteHeader(http.StatusNotAcceptable)
+			slog.Info("server: client requested data in wrong format instead of "+ContentTypeNdJson, "wrong_accept", accepts)
+			return
+		}
+
 		respCtl := http.NewResponseController(writer)
 		err := respCtl.EnableFullDuplex()
 		if err != nil {
@@ -142,6 +173,14 @@ func server(ctx context.Context, address string) error {
 					if !errors.Is(err, io.ErrUnexpectedEOF) {
 						slog.Error("server: failed to send respond message to client", "error", err)
 						return
+					}
+					slog.Info("server: client closed connection - finished")
+					return
+				}
+				_, err = io.WriteString(writer, "\n")
+				if err != nil {
+					if !errors.Is(err, io.EOF) {
+						slog.Error("server: failed to send newline to client", "error", err)
 					}
 					slog.Info("server: client closed connection - finished")
 					return
