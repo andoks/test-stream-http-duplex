@@ -99,10 +99,26 @@ func client(ctx context.Context, address string) error {
 func server(ctx context.Context, address string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		respCtl := http.NewResponseController(writer)
+		err := respCtl.EnableFullDuplex()
+		if err != nil {
+			slog.Warn("failed to enable full duplex on http writer", "error", err)
+			return
+		}
+
 		var inMsg requestMsg
 		outMsg := responseMsg{Msg: "pong"}
 		dec := json.NewDecoder(request.Body)
 		enc := json.NewEncoder(writer)
+
+		// to get the communication going
+		writer.WriteHeader(http.StatusOK)
+		err = respCtl.Flush()
+		if err != nil {
+			slog.Error("server: failed to flush status header to client", "error", err)
+			return
+		}
+		slog.Info("server: wrote status ok to client")
 
 		for {
 			select {
@@ -128,6 +144,11 @@ func server(ctx context.Context, address string) error {
 						return
 					}
 					slog.Info("server: client closed connection - finished")
+					return
+				}
+				err = respCtl.Flush()
+				if err != nil {
+					slog.Error("server: failed to flush request message to client", "error", err)
 					return
 				}
 				slog.Info("server: sent pong to client")
