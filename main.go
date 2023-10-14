@@ -27,6 +27,18 @@ type responseMsg struct {
 const ContentTypeNdJson = "application/x-ndjson"
 
 var clientPings atomic.Uint64
+var clientWriteBytes atomic.Uint64
+
+type countWriter struct {
+	w     io.Writer
+	count uint64
+}
+
+func (cw *countWriter) Write(p []byte) (int, error) {
+	n, err := cw.w.Write(p)
+	cw.count += uint64(n)
+	return n, err
+}
 
 func client(ctx context.Context, address string) error {
 	client := http.Client{
@@ -37,11 +49,11 @@ func client(ctx context.Context, address string) error {
 	}
 
 	var resp *http.Response
-	var w *io.PipeWriter
+	var pw *io.PipeWriter
 	for {
 		// explicitly set r to be a io.Reader, as if not, NewRequestWithContext tries to close the reader before returning as PipeReader fulfills ReadeCloser interface
 		var r *io.PipeReader
-		r, w = io.Pipe()
+		r, pw = io.Pipe()
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, address, r)
 		if err != nil {
 			return fmt.Errorf("failed to create request, error was: %w", err)
@@ -73,6 +85,9 @@ func client(ctx context.Context, address string) error {
 	}
 	defer resp.Body.Close()
 
+	w := &countWriter{
+		w: pw,
+	}
 	enc := json.NewEncoder(w)
 	dec := json.NewDecoder(resp.Body)
 	ticker := time.NewTicker(1 * time.Second)
@@ -115,6 +130,7 @@ func client(ctx context.Context, address string) error {
 			}
 			slog.Debug("client: received message from server", "msg", in.Msg)
 			clientPings.Add(1)
+			clientWriteBytes.Store(w.count)
 		}
 	}
 }
@@ -270,12 +286,19 @@ func main() {
 	})
 	eg.Go(func() error {
 		ticker := time.NewTicker(5 * time.Second)
+		start := time.Now()
 		for {
 			select {
 			case <-ctx.Done():
 				return nil
 			case <-ticker.C:
-				slog.Info("measurements", "serverPongs", serverPongs.Load(), "clientPings", clientPings.Load())
+				now := time.Now()
+				s := now.Sub(start).Seconds()
+				slog.Info("measurements",
+					"serverPongsPerSecond", float64(serverPongs.Load())/s,
+					"clientPingsPerSecond", float64(clientPings.Load())/s,
+					"clientWriteMBytesPerSecond", float64(clientWriteBytes.Load())/s/(1024*1024),
+				)
 			}
 		}
 		return nil
